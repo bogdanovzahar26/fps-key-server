@@ -1,33 +1,90 @@
-from flask import Flask, request, jsonify
-import os
+import customtkinter as ctk
+import random
+import string
+import requests
 
-app = Flask(__name__)
+# ===== НАСТРОЙКИ =====
+SERVER_URL = "https://ТВОЙ-СЕРВЕР.onrender.com/add_key"
+ADMIN_PASSWORD = "Kalambur01"
 
-# База ключей (можно потом расширить)
-KEYS = {
-    "ULT1-AAAA-1111": {"plan": 1, "used": False},
-    "ULT2-BBBB-2222": {"plan": 2, "used": False},
-    "ULT3-CCCC-3333": {"plan": 3, "used": False}
-}
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("dark-blue")
 
-@app.route("/")
-def home():
-    return "FPS Key Server работает"
+app = ctk.CTk()
+app.title("Ultimate Optimization — KeyManager")
+app.geometry("520x420")
+app.resizable(False, False)
 
-@app.route("/check", methods=["POST"])
-def check_key():
-    data = request.get_json()
-    key = data.get("key")
+# ===== UI =====
+title = ctk.CTkLabel(app, text="KeyManager", font=("Segoe UI", 26, "bold"))
+title.pack(pady=(20, 5))
 
-    if key not in KEYS:
-        return jsonify({"ok": False, "msg": "Неверный ключ"})
+subtitle = ctk.CTkLabel(app, text="Генератор одноразовых ключей", font=("Segoe UI", 14))
+subtitle.pack(pady=(0, 20))
 
-    if KEYS[key]["used"]:
-        return jsonify({"ok": False, "msg": "Ключ уже использован"})
+result_box = ctk.CTkEntry(app, width=360, height=40, justify="center", font=("Consolas", 16))
+result_box.pack(pady=10)
 
-    KEYS[key]["used"] = True
-    return jsonify({"ok": True, "plan": KEYS[key]["plan"]})
+status_label = ctk.CTkLabel(app, text="", font=("Segoe UI", 12))
+status_label.pack(pady=5)
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+# ===== ЛОГИКА =====
+def generate_key(prefix):
+    def block():
+        return ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    return f"{prefix}-{block()}-{block()}"
+
+def send_key(plan, prefix):
+    key = generate_key(prefix)
+    result_box.delete(0, "end")
+    result_box.insert(0, key)
+
+    data = {
+        "password": ADMIN_PASSWORD,
+        "key": key,
+        "plan": plan
+    }
+
+    try:
+        r = requests.post(SERVER_URL, json=data, timeout=5)
+        if r.json().get("ok"):
+            status_label.configure(text="✅ Ключ сохранён на сервере", text_color="green")
+        else:
+            status_label.configure(text="❌ Ошибка сервера", text_color="red")
+    except:
+        status_label.configure(text="❌ Сервер недоступен", text_color="red")
+
+# ===== КНОПКИ =====
+btn_frame = ctk.CTkFrame(app)
+btn_frame.pack(pady=20)
+
+ctk.CTkButton(
+    btn_frame,
+    text="Стабильный FPS — 1000",
+    width=260,
+    command=lambda: send_key(1, "ULT1")
+).pack(pady=5)
+
+ctk.CTkButton(
+    btn_frame,
+    text="FPS + Интернет — 1800",
+    width=260,
+    command=lambda: send_key(2, "ULT2")
+).pack(pady=5)
+
+ctk.CTkButton(
+    btn_frame,
+    text="Максимальная мощность — 4500",
+    width=260,
+    command=lambda: send_key(3, "ULT3")
+).pack(pady=5)
+
+info = ctk.CTkLabel(
+    app,
+    text="Ключ сразу уходит на сервер и становится одноразовым",
+    font=("Segoe UI", 12),
+    text_color="#94a3b8"
+)
+info.pack(pady=10)
+
+app.mainloop()
