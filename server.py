@@ -1,90 +1,135 @@
-import customtkinter as ctk
-import random
-import string
-import requests
+from __future__ import annotations
 
-# ===== НАСТРОЙКИ =====
-SERVER_URL = "https://ТВОЙ-СЕРВЕР.onrender.com/add_key"
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+from threading import Lock
+
+from flask import Flask, jsonify, request
+
+
+APP_VERSION = "1.0.0"
 ADMIN_PASSWORD = "Kalambur01"
+STORAGE_PATH = Path("keys.json")
 
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("dark-blue")
+app = Flask(__name__)
+_storage_lock = Lock()
 
-app = ctk.CTk()
-app.title("Ultimate Optimization — KeyManager")
-app.geometry("520x420")
-app.resizable(False, False)
 
-# ===== UI =====
-title = ctk.CTkLabel(app, text="KeyManager", font=("Segoe UI", 26, "bold"))
-title.pack(pady=(20, 5))
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-subtitle = ctk.CTkLabel(app, text="Генератор одноразовых ключей", font=("Segoe UI", 14))
-subtitle.pack(pady=(0, 20))
 
-result_box = ctk.CTkEntry(app, width=360, height=40, justify="center", font=("Consolas", 16))
-result_box.pack(pady=10)
+def _load_keys() -> dict[str, dict]:
+    if not STORAGE_PATH.exists():
+        return {}
 
-status_label = ctk.CTkLabel(app, text="", font=("Segoe UI", 12))
-status_label.pack(pady=5)
+    with STORAGE_PATH.open("r", encoding="utf-8") as f:
+        data = json.load(f)
 
-# ===== ЛОГИКА =====
-def generate_key(prefix):
-    def block():
-        return ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
-    return f"{prefix}-{block()}-{block()}"
+    if not isinstance(data, dict):
+        return {}
 
-def send_key(plan, prefix):
-    key = generate_key(prefix)
-    result_box.delete(0, "end")
-    result_box.insert(0, key)
+    return data
 
-    data = {
-        "password": ADMIN_PASSWORD,
-        "key": key,
-        "plan": plan
-    }
 
-    try:
-        r = requests.post(SERVER_URL, json=data, timeout=5)
-        if r.json().get("ok"):
-            status_label.configure(text="✅ Ключ сохранён на сервере", text_color="green")
-        else:
-            status_label.configure(text="❌ Ошибка сервера", text_color="red")
-    except:
-        status_label.configure(text="❌ Сервер недоступен", text_color="red")
+def _save_keys(keys: dict[str, dict]) -> None:
+    with STORAGE_PATH.open("w", encoding="utf-8") as f:
+        json.dump(keys, f, ensure_ascii=False, indent=2)
 
-# ===== КНОПКИ =====
-btn_frame = ctk.CTkFrame(app)
-btn_frame.pack(pady=20)
 
-ctk.CTkButton(
-    btn_frame,
-    text="Стабильный FPS — 1000",
-    width=260,
-    command=lambda: send_key(1, "ULT1")
-).pack(pady=5)
+@app.get("/")
+def root():
+    return jsonify(
+        {
+            "ok": True,
+            "service": "fps-key-server",
+            "version": APP_VERSION,
+            "pulse": "/pulse",
+            "time": _utc_now_iso(),
+        }
+    )
 
-ctk.CTkButton(
-    btn_frame,
-    text="FPS + Интернет — 1800",
-    width=260,
-    command=lambda: send_key(2, "ULT2")
-).pack(pady=5)
 
-ctk.CTkButton(
-    btn_frame,
-    text="Максимальная мощность — 4500",
-    width=260,
-    command=lambda: send_key(3, "ULT3")
-).pack(pady=5)
+@app.get("/pulse")
+def pulse():
+    """Health-check endpoint similar to a service pulse/heartbeat."""
+    return jsonify(
+        {
+            "ok": True,
+            "status": "alive",
+            "service": "fps-key-server",
+            "version": APP_VERSION,
+            "time": _utc_now_iso(),
+        }
+    )
 
-info = ctk.CTkLabel(
-    app,
-    text="Ключ сразу уходит на сервер и становится одноразовым",
-    font=("Segoe UI", 12),
-    text_color="#94a3b8"
-)
-info.pack(pady=10)
 
-app.mainloop()
+@app.post("/add_key")
+def add_key():
+    payload = request.get_json(silent=True) or {}
+
+    if payload.get("password") != ADMIN_PASSWORD:
+        return jsonify({"ok": False, "error": "invalid_password"}), 403
+
+    key = str(payload.get("key", "")).strip().upper()
+    plan = payload.get("plan")
+
+    if not key:
+        return jsonify({"ok": False, "error": "missing_key"}), 400
+
+    if plan not in (1, 2, 3):
+        return jsonify({"ok": False, "error": "invalid_plan"}), 400
+
+    with _storage_lock:
+        keys = _load_keys()
+        keys[key] = {
+            "plan": plan,
+            "used": False,
+            "created_at": _utc_now_iso(),
+            "used_at": None,
+        }
+        _save_keys(keys)
+
+    return jsonify({"ok": True, "key": key, "plan": plan})
+
+
+@app.post("/use_key")
+def use_key():
+    payload = request.get_json(silent=True) or {}
+    key = str(payload.get("key", "")).strip().upper()
+
+    if not key:
+        return jsonify({"ok": False, "error": "missing_key"}), 400
+
+    with _storage_lock:
+        keys = _load_keys()
+        record = keys.get(key)
+
+        if record is None:
+            return jsonify({"ok": False, "error": "key_not_found"}), 404
+
+        if record.get("used"):
+            return jsonify({"ok": False, "error": "key_already_used"}), 409
+
+        record["used"] = True
+        record["used_at"] = _utc_now_iso()
+        _save_keys(keys)
+
+    return jsonify({"ok": True, "plan": record.get("plan")})
+
+
+@app.get("/key/<string:key>")
+def key_status(key: str):
+    with _storage_lock:
+        keys = _load_keys()
+        record = keys.get(key.upper())
+
+    if record is None:
+        return jsonify({"ok": False, "error": "key_not_found"}), 404
+
+    return jsonify({"ok": True, "key": key.upper(), "data": record})
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
